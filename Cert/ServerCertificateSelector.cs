@@ -8,6 +8,11 @@ public class ServerCertificateSelector(AcmeCertificateFactory acmeCertificateFac
 {
 	public X509Certificate2 Select(ConnectionContext context, string domainName)
 	{
+		domainName = domainName?.Trim().ToLower() ?? string.Empty;
+		if (string.IsNullOrWhiteSpace(domainName) || Uri.CheckHostName(domainName) != UriHostNameType.Dns)
+		{
+			return null;
+		}
 		var cert = certificateStore.GetCertificate(domainName);
 		if (cert == null || cert.NotAfter < DateTime.UtcNow.AddDays(5))
 		{

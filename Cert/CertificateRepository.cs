@@ -4,43 +4,46 @@ using System.Security.Cryptography.X509Certificates;
 
 namespace YARP.Cert;
 
-public class CertificateRepository()
+public class CertificateRepository(ILogger<CertificateRepository> logger)
 {
 	readonly string certsPath = $@"{SystemConsts.BASE_PATH}/SSL/certs";
 	private readonly ConcurrentDictionary<string, X509Certificate2> certs =
 		new(StringComparer.OrdinalIgnoreCase);
 
-	public X509Certificate2 GetCertificate(string domainName)
+	public void Initialize()
 	{
-		if (certs.TryGetValue(domainName, out var cert))
+		var allCert = Directory.GetFiles(certsPath, "*.pfx")
+			.Select(x => new { file = x, cert = X509CertificateLoader.LoadPkcs12(File.ReadAllBytes(x), string.Empty), domain = Path.GetFileName(x).Split('_').First().ToLower() }).ToList();
+
+		var validCerts = allCert.Where(x => x.cert.NotAfter > DateTime.UtcNow.AddDays(1))
+		 .GroupBy(x => x.domain).Select(x => new { domain = x.Key, x.OrderByDescending(y => y.cert.NotAfter).First().cert })
+		 .ToList();
+		foreach (var x in validCerts)
 		{
-			if (cert?.NotAfter > DateTime.UtcNow.AddDays(1))
-			{
-				return cert;
-			}
-			return null;
+			certs[x.domain] = x.cert;
 		}
-		var allCerts = Directory.GetFiles(certsPath, "*.pfx").Where(x => Path.GetFileName(x).StartsWith($"{domainName}_"))
-		 .Select(x => new { file = x, cert = X509CertificateLoader.LoadPkcs12(File.ReadAllBytes(x), string.Empty) }).ToList();
-		var bestCert = allCerts.Where(x => x.cert.NotAfter > DateTime.UtcNow.AddDays(1)).OrderByDescending(x => x.cert.NotAfter).FirstOrDefault();
-		if (bestCert == null)
+		foreach (var cert in allCert)
 		{
-			certs[domainName] = null;
-			return null;
-		}
-		try
-		{
-			foreach (var allCert in allCerts)
+			if (!validCerts.Any(x => x.cert == cert.cert))
 			{
-				if (allCert.file != bestCert.file)
+				try
 				{
-					File.Delete(allCert.file);
+					File.Delete(cert.file);
+				}
+				catch (Exception ex)
+				{
+					logger.LogError(ex, "CertificateRepository->Initialize");
 				}
 			}
 		}
-		catch { }
-		certs[domainName] = bestCert.cert;
-		return bestCert.cert;
+	}
+	public X509Certificate2 GetCertificate(string domainName)
+	{
+		if (certs.TryGetValue(domainName, out var cert) && cert.NotAfter > DateTime.UtcNow.AddDays(1))
+		{
+			return cert;
+		}
+		return null;
 	}
 
 	public void Save(X509Certificate2 certificate, string domainName)
