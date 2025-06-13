@@ -1,4 +1,5 @@
 using YARP;
+using YARP.ReverseProxy;
 
 
 var builder = WebApplication.CreateBuilder(args);
@@ -12,7 +13,7 @@ foreach (var file in Directory.EnumerateFiles(Path.Combine(basePath, "Configs"),
 	builder.Configuration.AddJsonFile(file, optional: true, reloadOnChange: true);
 }
 
-builder.Services.AddReverseProxy().LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"));
+builder.Services.AddReverseProxy().LoadFromReverseProxyConfig(builder.Configuration.GetSection("ReverseProxy"));
 
 builder.Services.Configure<AppSettings>(builder.Configuration.GetSection("Settings"));
 
