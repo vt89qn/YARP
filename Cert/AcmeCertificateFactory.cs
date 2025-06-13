@@ -11,35 +11,34 @@ public class AcmeCertificateFactory(AccountStore accountStore, CertificateReposi
 	private AcmeClient client;
 	private IKey acmeAccountKey;
 
-	private readonly ConcurrentDictionary<string, IOrderContext> orderings =
-		new(StringComparer.OrdinalIgnoreCase);
-	public async Task<AccountModel> GetOrCreateAccountAsync()
+	private static readonly SemaphoreSlim clientCreationLock = new(1, 1);
+	private readonly ConcurrentDictionary<string, SemaphoreSlim> domainLocks = new();
+
+	public async Task CreateAcmeClientAsync()
 	{
+		if (client != null) return;
+		await clientCreationLock.WaitAsync();
+		if (client != null) return;
 		try
 		{
 			var account = accountStore.GetAccount();
-
 			acmeAccountKey = account != null
 				? KeyFactory.FromDer(account.PrivateKey)
 				: KeyFactory.NewKey(Certes.KeyAlgorithm.ES256);
-			client = CreateAcmeClient(acmeAccountKey);
-			if (account != null && await existingAccountIsValidAsync())
+			client = new AcmeClient(WellKnownServers.LetsEncryptV2, acmeAccountKey);
+			if (account == null || !await existingAccountIsValidAsync())
 			{
-				return account;
+				await createAccountAsync();
 			}
-
-			account = await createAccountAsync();
-			return account;
 		}
 		catch (Exception ex)
 		{
-			logger.LogError(ex, "GetOrCreateAccountAsync");
+			logger.LogError(ex, "CreateAcmeClientAsync");
 		}
-		return default;
-	}
-	public AcmeClient CreateAcmeClient(IKey acmeAccountKey)
-	{
-		return new AcmeClient(WellKnownServers.LetsEncryptV2, acmeAccountKey);
+		finally
+		{
+			clientCreationLock.Release();
+		}
 	}
 	private async Task<AccountModel> createAccountAsync()
 	{
@@ -92,95 +91,71 @@ public class AcmeCertificateFactory(AccountStore accountStore, CertificateReposi
 
 		return true;
 	}
-	bool isGettingAccount = false;
-	public async Task CreateCertificateAsync(string domainName, CancellationToken cancellationToken)
-	{
-		cancellationToken.ThrowIfCancellationRequested();
-		if (isGettingAccount)
-			return;
 
-		if (client == null)
-		{
-			isGettingAccount = true;
-			await GetOrCreateAccountAsync();
-			isGettingAccount = false;
-		}
-		if (orderings.TryGetValue(domainName, out _)) return;
-		orderings[domainName] = null;
+	public async Task CreateCertificateAsync(string domainName)
+	{
+		await CreateAcmeClientAsync();
+		var domainLock = domainLocks.GetOrAdd(domainName, _ => new SemaphoreSlim(1, 1));
+		await domainLock.WaitAsync();
 		try
 		{
+			var existingCert = certificateStore.GetCertificate(domainName);
+			if (existingCert != null && existingCert.NotAfter > DateTime.UtcNow.AddDays(7))
+			{
+				return;
+			}
+
 			var order = await client.CreateOrderAsync(domainName);
 
 			var authorizations = await client.GetOrderAuthorizations(order);
-
-			cancellationToken.ThrowIfCancellationRequested();
-			await Task.WhenAll(beginValidateAllAuthorizations(authorizations, cancellationToken));
-
-			cancellationToken.ThrowIfCancellationRequested();
-			var cert = await completeCertificateRequestAsync(order, domainName, cancellationToken);
+			if (!await validateDomainOwnershipAsync(authorizations.First()))
+			{
+				return;
+			}
+			var cert = await completeCertificateRequestAsync(order, domainName);
 
 			if (cert != null)
 			{
-				certificateStore.Save(cert, domainName, cancellationToken);
+				certificateStore.Save(cert, domainName);
 			}
 		}
 		catch (Exception ex)
 		{
 			logger.LogError(ex, "CreateCertificateAsync");
 		}
-		orderings.TryRemove(domainName, out _);
-	}
-
-	private IEnumerable<Task> beginValidateAllAuthorizations(IEnumerable<IAuthorizationContext> authorizations,
-		CancellationToken cancellationToken)
-	{
-		foreach (var authorization in authorizations)
+		finally
 		{
-			yield return validateDomainOwnershipAsync(authorization, cancellationToken);
+			domainLock.Release();
+			domainLocks.TryRemove(domainName, out _);
 		}
 	}
 
-	private async Task validateDomainOwnershipAsync(IAuthorizationContext authorizationContext,
-		CancellationToken cancellationToken)
+	private async Task<bool> validateDomainOwnershipAsync(IAuthorizationContext authorizationContext)
 	{
-		cancellationToken.ThrowIfCancellationRequested();
-		if (client == null)
-		{
-			throw new InvalidOperationException();
-		}
-
 		var authorization = await client.GetAuthorizationAsync(authorizationContext);
 		var domainName = authorization.Identifier.Value;
 
 		if (authorization.Status == AuthorizationStatus.Valid)
 		{
 			// Short circuit if authorization is already complete
-			return;
+			return true;
 		}
-
-		cancellationToken.ThrowIfCancellationRequested();
-
-
-
 		try
 		{
 			var validator = new Http01DomainValidator(challengeStore, client, domainName, logger);
 
-			await validator.ValidateOwnershipAsync(authorizationContext, cancellationToken);
+			await validator.ValidateOwnershipAsync(authorizationContext);
+			return true;
 		}
 		catch (Exception ex)
 		{
 			logger.LogError(ex, "validator.ValidateOwnershipAsync");
 		}
-
-		throw new InvalidOperationException($"Failed to validate ownership of domainName '{domainName}'");
-
+		return false;
 	}
 
-	private async Task<X509Certificate2> completeCertificateRequestAsync(IOrderContext order, string domainName,
-		CancellationToken cancellationToken)
+	private async Task<X509Certificate2> completeCertificateRequestAsync(IOrderContext order, string domainName)
 	{
-		cancellationToken.ThrowIfCancellationRequested();
 		if (client == null)
 		{
 			throw new InvalidOperationException();

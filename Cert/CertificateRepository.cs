@@ -43,7 +43,7 @@ public class CertificateRepository()
 		return bestCert.cert;
 	}
 
-	public void Save(X509Certificate2 certificate, string domainName, CancellationToken cancellationToken)
+	public void Save(X509Certificate2 certificate, string domainName)
 	{
 		certs[domainName] = certificate;
 		File.WriteAllBytes($@"{certsPath}/{domainName}_{certificate.Thumbprint}.pfx", certificate.Export(X509ContentType.Pfx));

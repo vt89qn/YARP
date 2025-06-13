@@ -11,7 +11,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Host.UseWindowsService();
 
-SystemConsts.BASE_PATH = "C:/YARP";
+SystemConsts.BASE_PATH = builder.Environment.ContentRootPath;
 
 foreach (var file in Directory.EnumerateFiles($@"{SystemConsts.BASE_PATH}/Configs", "*.json", SearchOption.AllDirectories))
 {
