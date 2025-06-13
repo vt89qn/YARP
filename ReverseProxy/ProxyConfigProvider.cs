@@ -6,23 +6,17 @@ using Yarp.ReverseProxy.Forwarder;
 
 namespace YARP.ReverseProxy;
 
-internal sealed class ProxyConfigProvider : IProxyConfigProvider, IDisposable
+internal sealed class ProxyConfigProvider(
+	ILogger<ProxyConfigProvider> logger,
+	IConfiguration configuration) : IProxyConfigProvider, IDisposable
 {
 	private readonly object _lockObject = new();
-	private readonly ILogger<ProxyConfigProvider> _logger;
-	private readonly IConfiguration _configuration;
-	private ConfigurationSnapshot? _snapshot;
-	private CancellationTokenSource? _changeToken;
+	private readonly ILogger<ProxyConfigProvider> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+	private readonly IConfiguration _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+	private ConfigurationSnapshot _snapshot;
+	private CancellationTokenSource _changeToken;
 	private bool _disposed;
-	private IDisposable? _subscription;
-
-	public ProxyConfigProvider(
-		ILogger<ProxyConfigProvider> logger,
-		IConfiguration configuration)
-	{
-		_logger = logger ?? throw new ArgumentNullException(nameof(logger));
-		_configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
-	}
+	private IDisposable _subscription;
 
 	public void Dispose()
 	{
@@ -39,15 +33,15 @@ internal sealed class ProxyConfigProvider : IProxyConfigProvider, IDisposable
 		// First time load
 		if (_snapshot is null)
 		{
-			_subscription = ChangeToken.OnChange(_configuration.GetReloadToken, UpdateSnapshot);
-			UpdateSnapshot();
+			_subscription = ChangeToken.OnChange(_configuration.GetReloadToken, updateSnapshot);
+			updateSnapshot();
 		}
 
 		return _snapshot;
 	}
 
 	[MemberNotNull(nameof(_snapshot))]
-	private void UpdateSnapshot()
+	private void updateSnapshot()
 	{
 		// Prevent overlapping updates, especially on startup.
 		lock (_lockObject)
@@ -60,12 +54,12 @@ internal sealed class ProxyConfigProvider : IProxyConfigProvider, IDisposable
 
 				foreach (var section in _configuration.GetSection("Clusters").GetChildren())
 				{
-					newSnapshot.Clusters.Add(CreateCluster(section));
+					newSnapshot.Clusters.Add(createCluster(section));
 				}
 
 				foreach (var section in _configuration.GetSection("Routes").GetChildren())
 				{
-					newSnapshot.Routes.Add(CreateRoute(section));
+					newSnapshot.Routes.Add(createRoute(section));
 				}
 
 				var hostMaps = _configuration.GetSection("HostMaps").Get<List<HostMap>>();
@@ -129,28 +123,28 @@ internal sealed class ProxyConfigProvider : IProxyConfigProvider, IDisposable
 		}
 	}
 
-	private static ClusterConfig CreateCluster(IConfigurationSection section)
+	private static ClusterConfig createCluster(IConfigurationSection section)
 	{
 		var destinations = new Dictionary<string, DestinationConfig>(StringComparer.OrdinalIgnoreCase);
 		foreach (var destination in section.GetSection(nameof(ClusterConfig.Destinations)).GetChildren())
 		{
-			destinations.Add(destination.Key, CreateDestination(destination));
+			destinations.Add(destination.Key, createDestination(destination));
 		}
 
 		return new ClusterConfig
 		{
 			ClusterId = section.Key,
 			LoadBalancingPolicy = section[nameof(ClusterConfig.LoadBalancingPolicy)],
-			SessionAffinity = CreateSessionAffinityConfig(section.GetSection(nameof(ClusterConfig.SessionAffinity))),
-			HealthCheck = CreateHealthCheckConfig(section.GetSection(nameof(ClusterConfig.HealthCheck))),
-			HttpClient = CreateHttpClientConfig(section.GetSection(nameof(ClusterConfig.HttpClient))),
-			HttpRequest = CreateProxyRequestConfig(section.GetSection(nameof(ClusterConfig.HttpRequest))),
+			SessionAffinity = createSessionAffinityConfig(section.GetSection(nameof(ClusterConfig.SessionAffinity))),
+			HealthCheck = createHealthCheckConfig(section.GetSection(nameof(ClusterConfig.HealthCheck))),
+			HttpClient = createHttpClientConfig(section.GetSection(nameof(ClusterConfig.HttpClient))),
+			HttpRequest = createProxyRequestConfig(section.GetSection(nameof(ClusterConfig.HttpRequest))),
 			Metadata = section.GetSection(nameof(ClusterConfig.Metadata)).ReadStringDictionary(),
 			Destinations = destinations,
 		};
 	}
 
-	private static RouteConfig CreateRoute(IConfigurationSection section)
+	private static RouteConfig createRoute(IConfigurationSection section)
 	{
 		if (!string.IsNullOrEmpty(section["RouteId"]))
 		{
@@ -170,12 +164,12 @@ internal sealed class ProxyConfigProvider : IProxyConfigProvider, IDisposable
 			Timeout = section.ReadTimeSpan(nameof(RouteConfig.Timeout)),
 			CorsPolicy = section[nameof(RouteConfig.CorsPolicy)],
 			Metadata = section.GetSection(nameof(RouteConfig.Metadata)).ReadStringDictionary(),
-			Transforms = CreateTransforms(section.GetSection(nameof(RouteConfig.Transforms))),
-			Match = CreateRouteMatch(section.GetSection(nameof(RouteConfig.Match))),
+			Transforms = createTransforms(section.GetSection(nameof(RouteConfig.Transforms))),
+			Match = createRouteMatch(section.GetSection(nameof(RouteConfig.Match))),
 		};
 	}
 
-	private static Dictionary<string, string>[]? CreateTransforms(IConfigurationSection section)
+	private static Dictionary<string, string>[] createTransforms(IConfigurationSection section)
 	{
 		if (section.GetChildren() is var children && !children.Any())
 		{
@@ -187,7 +181,7 @@ internal sealed class ProxyConfigProvider : IProxyConfigProvider, IDisposable
 			.ToArray();
 	}
 
-	private static RouteMatch CreateRouteMatch(IConfigurationSection section)
+	private static RouteMatch createRouteMatch(IConfigurationSection section)
 	{
 		if (!section.Exists())
 		{
@@ -199,22 +193,22 @@ internal sealed class ProxyConfigProvider : IProxyConfigProvider, IDisposable
 			Methods = section.GetSection(nameof(RouteMatch.Methods)).ReadStringArray(),
 			Hosts = section.GetSection(nameof(RouteMatch.Hosts)).ReadStringArray(),
 			Path = section[nameof(RouteMatch.Path)],
-			Headers = CreateRouteHeaders(section.GetSection(nameof(RouteMatch.Headers))),
-			QueryParameters = CreateRouteQueryParameters(section.GetSection(nameof(RouteMatch.QueryParameters)))
+			Headers = createRouteHeaders(section.GetSection(nameof(RouteMatch.Headers))),
+			QueryParameters = createRouteQueryParameters(section.GetSection(nameof(RouteMatch.QueryParameters)))
 		};
 	}
 
-	private static RouteHeader[]? CreateRouteHeaders(IConfigurationSection section)
+	private static RouteHeader[] createRouteHeaders(IConfigurationSection section)
 	{
 		if (!section.Exists())
 		{
 			return null;
 		}
 
-		return section.GetChildren().Select(CreateRouteHeader).ToArray();
+		return section.GetChildren().Select(createRouteHeader).ToArray();
 	}
 
-	private static RouteHeader CreateRouteHeader(IConfigurationSection section)
+	private static RouteHeader createRouteHeader(IConfigurationSection section)
 	{
 		return new RouteHeader()
 		{
@@ -225,17 +219,17 @@ internal sealed class ProxyConfigProvider : IProxyConfigProvider, IDisposable
 		};
 	}
 
-	private static RouteQueryParameter[]? CreateRouteQueryParameters(IConfigurationSection section)
+	private static RouteQueryParameter[] createRouteQueryParameters(IConfigurationSection section)
 	{
 		if (!section.Exists())
 		{
 			return null;
 		}
 
-		return section.GetChildren().Select(CreateRouteQueryParameter).ToArray();
+		return section.GetChildren().Select(createRouteQueryParameter).ToArray();
 	}
 
-	private static RouteQueryParameter CreateRouteQueryParameter(IConfigurationSection section)
+	private static RouteQueryParameter createRouteQueryParameter(IConfigurationSection section)
 	{
 		return new RouteQueryParameter()
 		{
@@ -246,7 +240,7 @@ internal sealed class ProxyConfigProvider : IProxyConfigProvider, IDisposable
 		};
 	}
 
-	private static SessionAffinityConfig? CreateSessionAffinityConfig(IConfigurationSection section)
+	private static SessionAffinityConfig createSessionAffinityConfig(IConfigurationSection section)
 	{
 		if (!section.Exists())
 		{
@@ -259,11 +253,11 @@ internal sealed class ProxyConfigProvider : IProxyConfigProvider, IDisposable
 			Policy = section[nameof(SessionAffinityConfig.Policy)],
 			FailurePolicy = section[nameof(SessionAffinityConfig.FailurePolicy)],
 			AffinityKeyName = section[nameof(SessionAffinityConfig.AffinityKeyName)]!,
-			Cookie = CreateSessionAffinityCookieConfig(section.GetSection(nameof(SessionAffinityConfig.Cookie)))
+			Cookie = createSessionAffinityCookieConfig(section.GetSection(nameof(SessionAffinityConfig.Cookie)))
 		};
 	}
 
-	private static SessionAffinityCookieConfig? CreateSessionAffinityCookieConfig(IConfigurationSection section)
+	private static SessionAffinityCookieConfig createSessionAffinityCookieConfig(IConfigurationSection section)
 	{
 		if (!section.Exists())
 		{
@@ -283,7 +277,7 @@ internal sealed class ProxyConfigProvider : IProxyConfigProvider, IDisposable
 		};
 	}
 
-	private static HealthCheckConfig? CreateHealthCheckConfig(IConfigurationSection section)
+	private static HealthCheckConfig createHealthCheckConfig(IConfigurationSection section)
 	{
 		if (!section.Exists())
 		{
@@ -292,13 +286,13 @@ internal sealed class ProxyConfigProvider : IProxyConfigProvider, IDisposable
 
 		return new HealthCheckConfig
 		{
-			Passive = CreatePassiveHealthCheckConfig(section.GetSection(nameof(HealthCheckConfig.Passive))),
-			Active = CreateActiveHealthCheckConfig(section.GetSection(nameof(HealthCheckConfig.Active))),
+			Passive = createPassiveHealthCheckConfig(section.GetSection(nameof(HealthCheckConfig.Passive))),
+			Active = createActiveHealthCheckConfig(section.GetSection(nameof(HealthCheckConfig.Active))),
 			AvailableDestinationsPolicy = section[nameof(HealthCheckConfig.AvailableDestinationsPolicy)]
 		};
 	}
 
-	private static PassiveHealthCheckConfig? CreatePassiveHealthCheckConfig(IConfigurationSection section)
+	private static PassiveHealthCheckConfig createPassiveHealthCheckConfig(IConfigurationSection section)
 	{
 		if (!section.Exists())
 		{
@@ -313,7 +307,7 @@ internal sealed class ProxyConfigProvider : IProxyConfigProvider, IDisposable
 		};
 	}
 
-	private static ActiveHealthCheckConfig? CreateActiveHealthCheckConfig(IConfigurationSection section)
+	private static ActiveHealthCheckConfig createActiveHealthCheckConfig(IConfigurationSection section)
 	{
 		if (!section.Exists())
 		{
@@ -331,7 +325,7 @@ internal sealed class ProxyConfigProvider : IProxyConfigProvider, IDisposable
 		};
 	}
 
-	private static HttpClientConfig? CreateHttpClientConfig(IConfigurationSection section)
+	private static HttpClientConfig createHttpClientConfig(IConfigurationSection section)
 	{
 		if (!section.Exists())
 		{
@@ -347,7 +341,7 @@ internal sealed class ProxyConfigProvider : IProxyConfigProvider, IDisposable
 			}
 		}
 
-		WebProxyConfig? webProxy;
+		WebProxyConfig webProxy;
 		var webProxySection = section.GetSection(nameof(HttpClientConfig.WebProxy));
 		if (webProxySection.Exists())
 		{
@@ -375,7 +369,7 @@ internal sealed class ProxyConfigProvider : IProxyConfigProvider, IDisposable
 		};
 	}
 
-	private static ForwarderRequestConfig? CreateProxyRequestConfig(IConfigurationSection section)
+	private static ForwarderRequestConfig createProxyRequestConfig(IConfigurationSection section)
 	{
 		if (!section.Exists())
 		{
@@ -391,7 +385,7 @@ internal sealed class ProxyConfigProvider : IProxyConfigProvider, IDisposable
 		};
 	}
 
-	private static DestinationConfig CreateDestination(IConfigurationSection section)
+	private static DestinationConfig createDestination(IConfigurationSection section)
 	{
 		return new DestinationConfig
 		{
@@ -409,7 +403,7 @@ internal sealed class ProxyConfigProvider : IProxyConfigProvider, IDisposable
 			EventIds.ErrorSignalingChange,
 			"An exception was thrown from the change notification.");
 
-		private static readonly Action<ILogger, Exception?> _loadData = LoggerMessage.Define(
+		private static readonly Action<ILogger, Exception> _loadData = LoggerMessage.Define(
 		LogLevel.Information,
 			EventIds.LoadData,
 			"Loading proxy data from config.");

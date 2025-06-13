@@ -4,9 +4,9 @@ using Yarp.ReverseProxy.Configuration;
 namespace YARP.ReverseProxy;
 class ConfigurationSnapshot : IProxyConfig
 {
-	public List<RouteConfig> Routes { get; internal set; } = new List<RouteConfig>();
+	public List<RouteConfig> Routes { get; internal set; } = [];
 
-	public List<ClusterConfig> Clusters { get; internal set; } = new List<ClusterConfig>();
+	public List<ClusterConfig> Clusters { get; internal set; } = [];
 
 	IReadOnlyList<RouteConfig> IProxyConfig.Routes => Routes;
 
