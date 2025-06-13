@@ -10,13 +10,13 @@ using YARP.Cert;
 namespace YARP;
 static class HostBuilderExtensions
 {
-	public static IHostBuilder UseSerilog(this IHostBuilder builder)
+	public static IHostBuilder AddLog(this IHostBuilder builder, string logPath)
 	{
 		return builder.UseSerilog((context, configuration) =>
 			configuration.ReadFrom.Configuration(context.Configuration).Enrich.FromLogContext()
 			.MinimumLevel.Debug().MinimumLevel.Override("Microsoft", LogEventLevel.Warning).MinimumLevel.Override("System", LogEventLevel.Warning)
 			.WriteTo.Logger(lc => lc.Filter.ByIncludingOnly($"@l in ['Error', 'Warning']")
-							.WriteTo.File(path: $@"{SystemConsts.BASE_PATH}/Logs/error-.log", rollingInterval: RollingInterval.Day, retainedFileCountLimit: 24
+							.WriteTo.File(path: Path.Combine(logPath, "error-.log"), rollingInterval: RollingInterval.Day, retainedFileCountLimit: 24
 								, outputTemplate: "{Timestamp:HHmmss.fff}	{Message:lj}{NewLine}{Exception}"))
 			);
 	}

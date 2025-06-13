@@ -1,21 +1,24 @@
+using Microsoft.Extensions.Options;
 using System.Text.Json;
 namespace YARP.Cert;
 
-public class AccountStore()
+public class AccountStore(IOptions<AppSettings> settings)
 {
-    readonly string accountPath = $@"{SystemConsts.BASE_PATH}/SSL/account.json";
-    public AccountModel GetAccount()
-    {
-        if (File.Exists(accountPath))
-        {
-            var account = JsonSerializer.Deserialize<AccountModel>(File.ReadAllText(accountPath));
-            return account;
-        }
-        return null;
-    }
+	readonly string accountPath = Path.Combine(settings.Value.BasePath, "SSL", "account.json");
+	public async Task<AccountModel> GetAccountAsync()
+	{
+		if (File.Exists(accountPath))
+		{
+			var json = await File.ReadAllTextAsync(accountPath);
+			return JsonSerializer.Deserialize<AccountModel>(json);
+		}
+		return null;
+	}
 
-    public void SaveAccount(AccountModel account)
-    {
-        File.WriteAllText(accountPath, JsonSerializer.Serialize(account));
-    }
+
+	public async Task SaveAccountAsync(AccountModel account)
+	{
+		var json = JsonSerializer.Serialize(account);
+		await File.WriteAllTextAsync(accountPath, json);
+	}
 }

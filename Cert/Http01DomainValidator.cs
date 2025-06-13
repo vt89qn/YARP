@@ -1,12 +1,13 @@
 // Copyright (c) Nate McMaster.
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
+using Certes;
 using Certes.Acme;
 using Certes.Acme.Resource;
 
 namespace YARP.Cert;
 
-class Http01DomainValidator(HttpChallengeResponseStore challengeStore, AcmeClient client, string domainName, ILogger logger)
+class Http01DomainValidator(HttpChallengeResponseStore challengeStore, string domainName, ILogger logger)
 {
 	public async Task ValidateOwnershipAsync(IAuthorizationContext authzContext)
 	{
@@ -17,21 +18,11 @@ class Http01DomainValidator(HttpChallengeResponseStore challengeStore, AcmeClien
 	private async Task PrepareHttpChallengeResponseAsync(
 		IAuthorizationContext authorizationContext)
 	{
-		if (client == null)
-		{
-			throw new InvalidOperationException();
-		}
-
-		var httpChallenge = await client.CreateChallengeAsync(authorizationContext, ChallengeTypes.Http01);
-		if (httpChallenge == null)
-		{
-			throw new InvalidOperationException(
+		var httpChallenge = await authorizationContext.Challenge(ChallengeTypes.Http01) ?? throw new InvalidOperationException(
 				$"Did not receive challenge information for challenge type {ChallengeTypes.Http01}");
-		}
-
 		var keyAuth = httpChallenge.KeyAuthz;
 		challengeStore.AddChallengeResponse(httpChallenge.Token, keyAuth);
-		await client.ValidateChallengeAsync(httpChallenge);
+		await httpChallenge.Validate();
 	}
 	async Task WaitForChallengeResultAsync(IAuthorizationContext authorizationContext)
 	{
@@ -42,7 +33,7 @@ class Http01DomainValidator(HttpChallengeResponseStore challengeStore, AcmeClien
 		{
 			retries--;
 
-			var authorization = await client.GetAuthorizationAsync(authorizationContext);
+			var authorization = await authorizationContext.Resource();
 
 
 

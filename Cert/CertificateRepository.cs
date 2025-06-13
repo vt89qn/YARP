@@ -1,12 +1,14 @@
 
+using Microsoft.Extensions.Options;
 using System.Collections.Concurrent;
 using System.Security.Cryptography.X509Certificates;
 
 namespace YARP.Cert;
 
-public class CertificateRepository(ILogger<CertificateRepository> logger)
+public class CertificateRepository(IOptions<AppSettings> settings, ILogger<CertificateRepository> logger)
 {
-	readonly string certsPath = $@"{SystemConsts.BASE_PATH}/SSL/certs";
+	readonly string certsPath = Path.Combine(settings.Value.BasePath, "SSL", "certs");
+
 	private readonly ConcurrentDictionary<string, X509Certificate2> certs =
 		new(StringComparer.OrdinalIgnoreCase);
 

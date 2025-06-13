@@ -1,68 +1,80 @@
 using Certes;
 using Certes.Acme;
 using Certes.Acme.Resource;
+using Microsoft.Extensions.Options;
 using System.Collections.Concurrent;
 using System.Security.Cryptography.X509Certificates;
 
 namespace YARP.Cert;
 
-public class AcmeCertificateFactory(AccountStore accountStore, CertificateRepository certificateStore, HttpChallengeResponseStore challengeStore, ILogger<AcmeCertificateFactory> logger)
+public class AcmeCertificateFactory(AccountStore accountStore, CertificateRepository certificateStore, HttpChallengeResponseStore challengeStore, IOptions<AppSettings> settings, ILogger<AcmeCertificateFactory> logger)
 {
-	private AcmeClient client;
-	private IKey acmeAccountKey;
+	//private AcmeClient client;
 
-	private static readonly SemaphoreSlim clientCreationLock = new(1, 1);
+
+	private AcmeContext context;
+	//private IAccountContext accountContext;
+
+	private static readonly SemaphoreSlim contextCreationLock = new(1, 1);
 	private readonly ConcurrentDictionary<string, SemaphoreSlim> domainLocks = new();
 
-	public async Task CreateAcmeClientAsync()
+	async Task<Account> getAccountAsync()
 	{
-		if (client != null) return;
-		await clientCreationLock.WaitAsync();
-		if (client != null) return;
-		try
-		{
-			var account = accountStore.GetAccount();
-			acmeAccountKey = account != null
-				? KeyFactory.FromDer(account.PrivateKey)
-				: KeyFactory.NewKey(Certes.KeyAlgorithm.ES256);
-			client = new AcmeClient(WellKnownServers.LetsEncryptV2, acmeAccountKey);
-			if (account == null || !await existingAccountIsValidAsync())
-			{
-				await createAccountAsync();
-			}
-		}
-		catch (Exception ex)
-		{
-			logger.LogError(ex, "CreateAcmeClientAsync");
-		}
-		finally
-		{
-			clientCreationLock.Release();
-		}
+		var accountContext = await context.Account();
+		return await accountContext.Resource();
 	}
-	private async Task<AccountModel> createAccountAsync()
+	async Task<AccountModel> createAccountAsync(IKey acmeAccountKey)
 	{
 		try
 		{
-			await client.CreateAccountAsync(SystemConsts.SSL_Email);
+			var acmeEmail = settings.Value.AcmeEmail;
+			var accountContext = await context.NewAccount(acmeEmail, termsOfServiceAgreed: true);
 
 			var accountModel = new AccountModel
 			{
 				Id = 0,
-				EmailAddresses = [SystemConsts.SSL_Email],
+				EmailAddresses = [acmeEmail],
 				PrivateKey = acmeAccountKey.ToDer(),
 			};
 
-			accountStore.SaveAccount(accountModel);
+			await accountStore.SaveAccountAsync(accountModel);
 
 			return accountModel;
 		}
 		catch (Exception ex)
 		{
-			logger.LogError(ex, "CreateAccountAsync");
+			logger.LogError(ex, "createAccountAsync");
 		}
 		return null;
 	}
+	async Task createAcmeContextAsync()
+	{
+		if (context != null) return;
+		await contextCreationLock.WaitAsync();
+		if (context != null) return;
+		try
+		{
+			var account = await accountStore.GetAccountAsync();
+			var acmeAccountKey = account != null
+				? KeyFactory.FromDer(account.PrivateKey)
+				: KeyFactory.NewKey(Certes.KeyAlgorithm.ES256);
+			context = new(WellKnownServers.LetsEncryptV2, acmeAccountKey);
+			if (account == null || !await existingAccountIsValidAsync())
+			{
+				await createAccountAsync(acmeAccountKey);
+			}
+		}
+		catch (Exception ex)
+		{
+			logger.LogError(ex, "createAcmeContextAsync");
+		}
+		finally
+		{
+			contextCreationLock.Release();
+		}
+	}
+
+
 
 	private async Task<bool> existingAccountIsValidAsync()
 	{
@@ -70,7 +82,7 @@ public class AcmeCertificateFactory(AccountStore accountStore, CertificateReposi
 		Account existingAccount;
 		try
 		{
-			existingAccount = await client.GetAccountAsync();
+			existingAccount = await getAccountAsync();
 		}
 		catch (AcmeRequestException exception)
 		{
@@ -94,7 +106,7 @@ public class AcmeCertificateFactory(AccountStore accountStore, CertificateReposi
 
 	public async Task CreateCertificateAsync(string domainName)
 	{
-		await CreateAcmeClientAsync();
+		await createAcmeContextAsync();
 		var domainLock = domainLocks.GetOrAdd(domainName, _ => new SemaphoreSlim(1, 1));
 		await domainLock.WaitAsync();
 		try
@@ -105,9 +117,9 @@ public class AcmeCertificateFactory(AccountStore accountStore, CertificateReposi
 				return;
 			}
 
-			var order = await client.CreateOrderAsync(domainName);
+			var order = await context.NewOrder([domainName]);
 
-			var authorizations = await client.GetOrderAuthorizations(order);
+			var authorizations = await order.Authorizations();
 			if (!await validateDomainOwnershipAsync(authorizations.First()))
 			{
 				return;
@@ -121,7 +133,7 @@ public class AcmeCertificateFactory(AccountStore accountStore, CertificateReposi
 		}
 		catch (Exception ex)
 		{
-			logger.LogError(ex, "CreateCertificateAsync");
+			logger.LogError(ex, "createAcmeContextAsync");
 		}
 		finally
 		{
@@ -132,7 +144,7 @@ public class AcmeCertificateFactory(AccountStore accountStore, CertificateReposi
 
 	private async Task<bool> validateDomainOwnershipAsync(IAuthorizationContext authorizationContext)
 	{
-		var authorization = await client.GetAuthorizationAsync(authorizationContext);
+		var authorization = await authorizationContext.Resource();
 		var domainName = authorization.Identifier.Value;
 
 		if (authorization.Status == AuthorizationStatus.Valid)
@@ -142,7 +154,7 @@ public class AcmeCertificateFactory(AccountStore accountStore, CertificateReposi
 		}
 		try
 		{
-			var validator = new Http01DomainValidator(challengeStore, client, domainName, logger);
+			var validator = new Http01DomainValidator(challengeStore, domainName, logger);
 
 			await validator.ValidateOwnershipAsync(authorizationContext);
 			return true;
@@ -156,17 +168,12 @@ public class AcmeCertificateFactory(AccountStore accountStore, CertificateReposi
 
 	private async Task<X509Certificate2> completeCertificateRequestAsync(IOrderContext order, string domainName)
 	{
-		if (client == null)
-		{
-			throw new InvalidOperationException();
-		}
-
 		var csrInfo = new CsrInfo
 		{
 			CommonName = domainName,
 		};
 		var privateKey = KeyFactory.NewKey(KeyAlgorithm.ES256);
-		var acmeCert = await client.GetCertificateAsync(csrInfo, privateKey, order);
+		var acmeCert = await order.Generate(csrInfo, privateKey);
 
 		var pfxBuilder = acmeCert.ToPfx(privateKey);
 		var pfxBytes = pfxBuilder.Build(domainName, string.Empty);
