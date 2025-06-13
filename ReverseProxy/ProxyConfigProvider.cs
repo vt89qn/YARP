@@ -62,7 +62,8 @@ internal sealed class ProxyConfigProvider(
 					newSnapshot.Routes.Add(createRoute(section));
 				}
 
-				var hostMaps = _configuration.GetSection("HostMaps").Get<List<HostMap>>();
+				var hostMaps = _configuration.GetSection("HostMaps").Get<Dictionary<string, List<HostMap>>>().
+					SelectMany(pair => pair.Value).ToList() ?? [];
 				if (hostMaps != null)
 				{
 					// Logic chuyển đổi giống hệt như trước
